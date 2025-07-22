@@ -200,6 +200,12 @@ pub struct ThreadPoolBuilder<S = DefaultSpawn> {
     /// Closure invoked on worker thread exit.
     exit_handler: Option<Box<ExitHandler>>,
 
+    /// worker空闲时回调
+    idle_handler: Option<Box<IdleHandler>>,
+
+    /// worker繁忙时回调
+    busy_handler: Option<Box<IdleHandler>>,
+
     /// Closure invoked to spawn threads.
     spawn_handler: S,
 
@@ -232,6 +238,9 @@ type StartHandler = dyn Fn(usize) + Send + Sync;
 /// Note that this same closure may be invoked multiple times in parallel.
 type ExitHandler = dyn Fn(usize) + Send + Sync;
 
+type IdleHandler = dyn Fn(usize) + Send + Sync;
+type BusyHandler = dyn Fn(usize) + Send + Sync;
+
 // NB: We can't `#[derive(Default)]` because `S` is left ambiguous.
 impl Default for ThreadPoolBuilder {
     fn default() -> Self {
@@ -243,6 +252,8 @@ impl Default for ThreadPoolBuilder {
             stack_size: None,
             start_handler: None,
             exit_handler: None,
+            idle_handler: None,
+            busy_handler: None,
             spawn_handler: DefaultSpawn,
             breadth_first: false,
         }
@@ -454,6 +465,8 @@ impl<S> ThreadPoolBuilder<S> {
             stack_size: self.stack_size,
             start_handler: self.start_handler,
             exit_handler: self.exit_handler,
+            idle_handler: self.idle_handler,
+            busy_handler: self.busy_handler,
             breadth_first: self.breadth_first,
         }
     }
@@ -672,6 +685,35 @@ impl<S> ThreadPoolBuilder<S> {
         self.exit_handler = Some(Box::new(exit_handler));
         self
     }
+
+
+    /// take idle handler
+    pub fn take_idle_handler(&mut self) -> Option<Box<IdleHandler>> {
+        self.idle_handler.take()
+    }
+
+    /// set idle handler
+    pub fn idle_handler<H>(mut self, idle_handler: H) -> Self
+    where
+        H: Fn(usize) + Send + Sync + 'static,
+    {
+        self.idle_handler = Some(Box::new(idle_handler));
+        self
+    }
+
+    /// take busy handler
+    pub fn take_busy_handler(&mut self) -> Option<Box<IdleHandler>> {
+        self.busy_handler.take()
+    }
+
+    /// set busy handler
+    pub fn busy_handler<H>(mut self, busy_handler: H) -> Self
+    where
+        H: Fn(usize) + Send + Sync + 'static,
+    {
+        self.busy_handler = Some(Box::new(busy_handler));
+        self
+    }
 }
 
 #[allow(deprecated)]
@@ -809,6 +851,8 @@ impl<S> fmt::Debug for ThreadPoolBuilder<S> {
             ref stack_size,
             ref start_handler,
             ref exit_handler,
+            ref idle_handler,
+            ref busy_handler,
             spawn_handler: _,
             ref breadth_first,
         } = *self;

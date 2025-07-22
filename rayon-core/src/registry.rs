@@ -2,7 +2,7 @@ use crate::job::{JobFifo, JobRef, StackJob};
 use crate::latch::{AsCoreLatch, CoreLatch, Latch, LatchRef, LockLatch, OnceLatch, SpinLatch};
 use crate::sleep::Sleep;
 use crate::sync::Mutex;
-use crate::unwind;
+use crate::{unwind, BusyHandler, IdleHandler};
 use crate::{
     ErrorKind, ExitHandler, PanicHandler, StartHandler, ThreadPoolBuildError, ThreadPoolBuilder,
     Yield,
@@ -136,6 +136,8 @@ pub(super) struct Registry {
     panic_handler: Option<Box<PanicHandler>>,
     start_handler: Option<Box<StartHandler>>,
     exit_handler: Option<Box<ExitHandler>>,
+    idle_handler: Option<Box<IdleHandler>>,
+    busy_handler: Option<Box<BusyHandler>>,
 
     // When this latch reaches 0, it means that all work on this
     // registry must be complete. This is ensured in the following ways:
@@ -268,6 +270,8 @@ impl Registry {
             panic_handler: builder.take_panic_handler(),
             start_handler: builder.take_start_handler(),
             exit_handler: builder.take_exit_handler(),
+            idle_handler: builder.take_idle_handler(),
+            busy_handler: builder.take_idle_handler(),
         });
 
         // If we return early or panic, make sure to terminate existing threads.
@@ -778,7 +782,7 @@ impl WorkerThread {
         // latch has been signaled, and that can lead to random memory
         // accesses, which would be *very bad*
         let abort_guard = unwind::AbortIfPanic;
-
+        let mut busy = false;
         'outer: while !latch.probe() {
             // Check for local work *before* we start marking ourself idle,
             // especially to avoid modifying shared sleep state.
@@ -786,15 +790,29 @@ impl WorkerThread {
                 self.execute(job);
                 continue;
             }
-
             let mut idle_state = self.registry.sleep.start_looking(self.index);
+            let registry = self.registry.as_ref();
             while !latch.probe() {
                 if let Some(job) = self.find_work() {
+                    if !busy {
+                        if let Some(handler) = &registry.busy_handler {
+                            // 通知worker繁忙
+                            registry.catch_unwind(|| handler(self.index));
+                        }
+                        busy = true;
+                    }
                     self.registry.sleep.work_found();
                     self.execute(job);
                     // The job might have injected local work, so go back to the outer loop.
                     continue 'outer;
                 } else {
+                    if busy {
+                        if let Some(handler) = &registry.idle_handler {
+                            // 通知worker空闲
+                            registry.catch_unwind(|| handler(self.index));
+                        }
+                        busy = false;
+                    }
                     self.registry
                         .sleep
                         .no_work_found(&mut idle_state, latch, || self.has_injected_job())
