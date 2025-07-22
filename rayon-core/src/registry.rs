@@ -271,7 +271,7 @@ impl Registry {
             start_handler: builder.take_start_handler(),
             exit_handler: builder.take_exit_handler(),
             idle_handler: builder.take_idle_handler(),
-            busy_handler: builder.take_idle_handler(),
+            busy_handler: builder.take_busy_handler(),
         });
 
         // If we return early or panic, make sure to terminate existing threads.
@@ -770,7 +770,7 @@ impl WorkerThread {
     pub(super) unsafe fn wait_until<L: AsCoreLatch + ?Sized>(&self, latch: &L) {
         let latch = latch.as_core_latch();
         if !latch.probe() {
-            self.wait_until_cold(latch, false);
+            self.wait_until_cold(latch, true);
         }
     }
 

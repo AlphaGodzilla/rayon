@@ -204,7 +204,7 @@ pub struct ThreadPoolBuilder<S = DefaultSpawn> {
     idle_handler: Option<Box<IdleHandler>>,
 
     /// worker繁忙时回调
-    busy_handler: Option<Box<IdleHandler>>,
+    busy_handler: Option<Box<BusyHandler>>,
 
     /// Closure invoked to spawn threads.
     spawn_handler: S,
