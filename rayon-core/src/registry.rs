@@ -770,12 +770,22 @@ impl WorkerThread {
     pub(super) unsafe fn wait_until<L: AsCoreLatch + ?Sized>(&self, latch: &L) {
         let latch = latch.as_core_latch();
         if !latch.probe() {
-            self.wait_until_cold(latch);
+            self.wait_until_cold(latch, false);
+        }
+    }
+
+    /// Wait until the latch is set. Try to keep busy by popping and
+    /// stealing tasks as necessary.
+    #[inline]
+    pub(super) unsafe fn wait_until_notify_thread_state<L: AsCoreLatch + ?Sized>(&self, latch: &L) {
+        let latch = latch.as_core_latch();
+        if !latch.probe() {
+            self.wait_until_cold(latch, true);
         }
     }
 
     #[cold]
-    unsafe fn wait_until_cold(&self, latch: &CoreLatch) {
+    unsafe fn wait_until_cold(&self, latch: &CoreLatch, notify_thread_state: bool) {
         // the code below should swallow all panics and hence never
         // unwind; but if something does wrong, we want to abort,
         // because otherwise other code in rayon may assume that the
@@ -794,7 +804,7 @@ impl WorkerThread {
             let registry = self.registry.as_ref();
             while !latch.probe() {
                 if let Some(job) = self.find_work() {
-                    if !busy {
+                    if notify_thread_state && !busy {
                         if let Some(handler) = &registry.busy_handler {
                             // 通知worker繁忙
                             registry.catch_unwind(|| handler(self.index));
@@ -806,7 +816,7 @@ impl WorkerThread {
                     // The job might have injected local work, so go back to the outer loop.
                     continue 'outer;
                 } else {
-                    if busy {
+                    if notify_thread_state && busy {
                         if let Some(handler) = &registry.idle_handler {
                             // 通知worker空闲
                             registry.catch_unwind(|| handler(self.index));
@@ -833,7 +843,7 @@ impl WorkerThread {
         let registry = &*self.registry;
         let index = self.index;
 
-        self.wait_until(&registry.thread_infos[index].terminate);
+        self.wait_until_notify_thread_state(&registry.thread_infos[index].terminate);
 
         // Should not be any work left in our queue.
         debug_assert!(self.take_local_job().is_none());
