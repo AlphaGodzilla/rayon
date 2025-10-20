@@ -84,6 +84,7 @@ mod unwind;
 
 mod compile_fail;
 mod test;
+mod injector;
 
 pub use self::broadcast::{broadcast, spawn_broadcast, BroadcastContext};
 pub use self::join::{join, join_context};
