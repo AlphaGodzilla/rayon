@@ -1,72 +1,85 @@
 use crossbeam_deque::Steal;
-use crossbeam_utils::atomic::AtomicCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crossbeam_utils::Backoff;
+use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-const ARRAY_SIZE: usize = 65536;
+const BUFFER_SIZE: usize = 65536;
 
-pub(crate) struct ArrayInjector {
-    map: Box<[AtomicUsize; ARRAY_SIZE]>,
-    index: AtomicCell<(usize, usize)>,
+pub(crate) struct ArrayInjector<T> {
+    map: Vec<AtomicPtr<MaybeUninit<T>>>,
+    index: AtomicUsize,
 }
-unsafe impl Sync for ArrayInjector {}
-unsafe impl Send for ArrayInjector {}
+unsafe impl<T> Sync for ArrayInjector<T> {}
+unsafe impl<T> Send for ArrayInjector<T> {}
 
-impl ArrayInjector {
+impl<T> ArrayInjector<T> {
     pub(crate) fn new() -> Self {
-        let queue = std::array::from_fn(|_| AtomicUsize::new(0));
+        let mut map = Vec::with_capacity(BUFFER_SIZE);
+        for _ in 0..BUFFER_SIZE {
+            map.push(AtomicPtr::default());
+        }
         Self {
-            map: Box::new(queue),
-            index: AtomicCell::new((0, 0)),
+            map,
+            index: AtomicUsize::new(0),
         }
     }
 
-    pub(crate) fn push<T>(&self, task: T) -> bool {
-        match self.index.fetch_update(|(adder, idx)| {
-            if idx + 1 >= ARRAY_SIZE {
-                None
-            } else {
-                Some((adder + 1, idx + 1))
+    pub(crate) fn push(&self, task: T) -> bool {
+        let backoff = Backoff::new();
+        loop {
+            let idx = self.index.load(Ordering::Acquire);
+            if idx + 1 >= BUFFER_SIZE {
+                println!("ArrayInjector full reject {}", BUFFER_SIZE);
+                return false;
             }
-        }) {
-            Ok((_, prev_idx)) => {
-                // 写入数据
-                unsafe {
-                    let slot = self.map.get_unchecked(prev_idx + 1);
-                    let job_ref_ptr = Box::into_raw(Box::new(task)) as usize;
-                    // println!("write idx: {}", prev_idx + 1);
-                    slot.store(job_ref_ptr, Ordering::Release);
-                    // println!("write ptr: {}", job_ref_ptr);
+            match self
+                .index
+                .compare_exchange(idx, idx + 1, Ordering::SeqCst, Ordering::Acquire)
+            {
+                Ok(old) => unsafe {
+                    let slot = self.map.get_unchecked(old + 1);
+                    let slot_ptr = slot.load(Ordering::Acquire);
+                    if slot_ptr.is_null() {
+                        let task = Box::into_raw(Box::new(MaybeUninit::new(task)));
+                        slot.store(task, Ordering::Release);
+                    } else {
+                        slot_ptr.write(MaybeUninit::new(task));
+                    }
+                    return true;
+                },
+                Err(_) => {
+                    // retry
+                    backoff.snooze();
                 }
-                true
-            }
-            Err(_) => {
-                println!("ArrayInjector cap not enough {}", ARRAY_SIZE);
-                false
             }
         }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.index.load().1 == 0
+        self.index.load(Ordering::Acquire) <= 0
     }
 
-    pub(crate) fn steal<T>(&self) -> Steal<Box<T>> {
-        match self.index.fetch_update(|(adder, idx)| {
-            if idx <= 0 {
-                None
-            } else {
-                Some((adder + 1, idx - 1))
-            }
-        }) {
-            Ok((_, prev_idx)) => unsafe {
-                // println!("read idx: {}", prev_idx);
-                let job_ref_ptr = self.map.get_unchecked(prev_idx);
-                let job_ref_ptr = job_ref_ptr.load(Ordering::Acquire);
-                // println!("read ptr: {}", job_ref_ptr);
-                let job = Box::from_raw(job_ref_ptr as *mut T);
-                Steal::Success(job)
+    pub(crate) fn steal(&self) -> Steal<T> {
+        let idx = self.index.load(Ordering::Acquire);
+        if idx <= 0 {
+            return Steal::Empty;
+        }
+        match self
+            .index
+            .compare_exchange(idx, idx - 1, Ordering::SeqCst, Ordering::Acquire)
+        {
+            Ok(old) => unsafe {
+                let slot = self.map.get_unchecked(old);
+                let slot = slot.load(Ordering::Acquire);
+                let task = slot.read().assume_init();
+                Steal::Success(task)
             },
-            Err((_, _)) => Steal::Empty,
+            Err(old) => {
+                if old <= 0 {
+                    return Steal::Empty;
+                }
+                Steal::Retry
+            }
         }
     }
 }
@@ -78,11 +91,11 @@ mod test {
 
     #[test]
     fn test() {
-        let inject: ArrayInjector = ArrayInjector::new();
+        let inject: ArrayInjector<usize> = ArrayInjector::new();
         inject.push(1);
         inject.push(2);
         inject.push(3);
         assert_eq!(inject.is_empty(), false);
-        assert_eq!(inject.steal(), Steal::Success(Box::new(3)));
+        assert_eq!(inject.steal(), Steal::Success(3));
     }
 }

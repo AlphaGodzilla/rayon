@@ -129,7 +129,7 @@ where
 pub(super) struct Registry {
     thread_infos: Vec<ThreadInfo>,
     sleep: Sleep,
-    injected_jobs: ArrayInjector,
+    injected_jobs: ArrayInjector<JobRef>,
     broadcasts: Mutex<Vec<Worker<JobRef>>>,
     panic_handler: Option<Box<PanicHandler>>,
     start_handler: Option<Box<StartHandler>>,
@@ -451,7 +451,7 @@ impl Registry {
     fn pop_injected_job(&self) -> Option<JobRef> {
         loop {
             match self.injected_jobs.steal() {
-                Steal::Success(job) => return Some(*job),
+                Steal::Success(job) => return Some(job),
                 Steal::Empty => return None,
                 Steal::Retry => {}
             }
