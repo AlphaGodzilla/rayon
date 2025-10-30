@@ -17,7 +17,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::thread;
-use crate::injector::ArrayInjector;
+use crate::injector::LifoArrayInjector;
 
 /// Thread builder used for customization via [`ThreadPoolBuilder::spawn_handler()`].
 pub struct ThreadBuilder {
@@ -129,7 +129,7 @@ where
 pub(super) struct Registry {
     thread_infos: Vec<ThreadInfo>,
     sleep: Sleep,
-    injected_jobs: ArrayInjector<JobRef>,
+    injected_jobs: LifoArrayInjector<JobRef>,
     broadcasts: Mutex<Vec<Worker<JobRef>>>,
     panic_handler: Option<Box<PanicHandler>>,
     start_handler: Option<Box<StartHandler>>,
@@ -272,7 +272,7 @@ impl Registry {
         let registry = Arc::new(Registry {
             thread_infos: stealers.into_iter().map(ThreadInfo::new).collect(),
             sleep: Sleep::new(n_threads),
-            injected_jobs: ArrayInjector::new(),
+            injected_jobs: LifoArrayInjector::new(),
             broadcasts: Mutex::new(broadcasts),
             terminate_count: AtomicUsize::new(1),
             panic_handler: builder.take_panic_handler(),

@@ -25,6 +25,7 @@ web_spin_lock = ["dep:wasm_sync"]
 crossbeam-deque.workspace = true
 crossbeam-utils.workspace = true
 wasm_sync = { workspace = true, optional = true }
+log = "0.4.28"
 
 [dev-dependencies]
 rand.workspace = true
